@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>TerraSpectra — Hyperspectral Crop Disease Forecasting</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<style>
+  :root {
+    --bg: #0A1210;
+    --panel: #0F1B17;
+    --panel-raised: #142621;
+    --border: #1E322B;
+    --text: #E7EFEA;
+    --text-dim: #7C948A;
+    --mint: #2FD180;
+    --mint-dim: #1B7C4C;
+    --amber: #E8A93B;
+    --red: #E85D4A;
+    --yellow: #E8C93B;
+    --green: #2FD180;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; line-height: 1.5; font-size: 14px; }
+  .app { max-width: 1400px; margin: 0 auto; }
+
+  /* ---- header ---- */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 28px; border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .logo {
+    width: 38px; height: 38px; border-radius: 9px; background: var(--mint-dim);
+    display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0;
+  }
+  .brand h1 { font-size: 19px; margin: 0; font-weight: 700; }
+  .brand .tagline { font-size: 11.5px; color: var(--mint); margin: 0; }
+  .header-sub { color: var(--text-dim); font-size: 12.5px; margin-left: 50px; }
+  .user-chip { display: flex; align-items: center; gap: 10px; }
+  .user-avatar {
+    width: 32px; height: 32px; border-radius: 50%; background: var(--panel-raised);
+    border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; color: var(--mint);
+  }
+  .user-name { font-size: 13px; font-weight: 600; }
+
+  /* ---- toolbar ---- */
+  .toolbar {
+    display: flex; align-items: center; gap: 14px; padding: 16px 28px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+  }
+  .chip {
+    background: var(--panel-raised); border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 14px; font-size: 13px; color: var(--text-dim);
+  }
+  .chip b { color: var(--text); font-weight: 600; }
+  .spacer { flex: 1; }
+  .toggle-group { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .toggle-btn {
+    background: transparent; color: var(--text-dim); border: none; padding: 9px 16px;
+    font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .toggle-btn.active { background: rgba(47,209,128,0.12); color: var(--mint); }
+  .toggle-btn:disabled { opacity: 0.35; cursor: default; }
+  button.primary {
+    background: var(--mint); color: #06140D; border: none; padding: 10px 20px; border-radius: 8px;
+    font-family: 'Inter', sans-serif; font-weight: 700; font-size: 13px; cursor: pointer;
+  }
+  button.primary:disabled { opacity: 0.4; cursor: default; }
+
+  /* ---- main layout ---- */
+  .main-grid { display: grid; grid-template-columns: 1fr 320px; gap: 20px; padding: 20px 28px; align-items: start; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+  }
+  .panel-title { font-size: 14px; font-weight: 700; margin: 0 0 4px; }
+  .panel-sub { font-size: 12px; color: var(--text-dim); margin: 0 0 16px; }
+  .empty { color: var(--text-dim); font-size: 13px; font-style: italic; padding: 30px 0; text-align: center; }
+
+  .map-panel { position: relative; }
+  .farm-grid { display: grid; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; cursor: pointer; }
+  .farm-cell { aspect-ratio: 1; transition: outline 0.1s; }
+  .farm-cell.selected { outline: 2px solid #fff; outline-offset: -2px; z-index: 1; }
+  .legend { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 11.5px; color: var(--text-dim); }
+  .legend-bar { flex: 1; height: 8px; border-radius: 4px; background: linear-gradient(to right, var(--green), var(--yellow), var(--red)); max-width: 220px; }
+
+  /* ---- sidebar cards ---- */
+  .side-stack { display: flex; flex-direction: column; gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+  .card-title { font-size: 12.5px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; margin: 0 0 14px; }
+  .field-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  .field-row:first-of-type { border-top: none; }
+  .field-row .v { font-weight: 700; }
+  .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 5px; }
+  .badge.high { background: rgba(232,93,74,0.15); color: var(--red); }
+  .badge.low { background: rgba(47,209,128,0.15); color: var(--mint); }
+  .pipeline-step { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 12.5px; }
+  .pipeline-step .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); flex-shrink: 0; }
+  .pipeline-step .label { color: var(--text); font-weight: 600; }
+  .pipeline-step .sub { color: var(--text-dim); font-size: 11.5px; }
+
+  /* ---- bottom analysis panels ---- */
+  .analysis-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 0 28px 40px; }
+  .plot { margin-top: 4px; }
+  .callout { font-size: 13px; line-height: 1.55; color: var(--text-dim); margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .callout b { color: var(--mint); }
+  .error-banner { background: var(--panel); border-left: 3px solid var(--red); padding: 14px 18px; margin: 0 28px 20px; color: var(--red); display: none; border-radius: 0 8px 8px 0; }
+  footer { color: var(--text-dim); font-size: 11.5px; text-align: center; padding: 24px; border-top: 1px solid var(--border); }
+
+  @media (max-width: 900px) {
+    .main-grid, .analysis-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div style="display:flex; align-items:center; gap:22px;">
+      <div class="brand">
+        <div class="logo">🌿</div>
+        <div>
+          <h1>TerraSpectra</h1>
+          <p class="tagline">Detecting risk before it's visible</p>
+        </div>
+      </div>
+      <div class="header-sub">AI-assisted crop stress detection using simulated hyperspectral data</div>
+    </div>
+    <div class="user-chip">
+      <div class="user-avatar">MJ</div>
+      <div class="user-name">Mrunal Jadhav</div>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <div class="chip">Region: <b>Maharashtra, India</b> <span style="opacity:0.6;">(illustrative)</span></div>
+    <div class="chip">Crop: <b>Soybean</b> <span style="opacity:0.6;">(illustrative)</span></div>
+    <button class="primary" id="btn-generate">Generate farm dataset</button>
+    <div class="spacer"></div>
+    <div class="toggle-group">
+      <button class="toggle-btn active" id="toggle-rgb" disabled>RGB</button>
+      <button class="toggle-btn" id="toggle-hyper" disabled>Hyperspectral risk</button>
+    </div>
+  </div>
+
+  <div id="error-banner" class="error-banner"></div>
+
+  <div class="main-grid">
+    <div class="panel map-panel">
+      <div class="panel-title" id="map-title">Field view — RGB (what a camera sees)</div>
+      <div class="panel-sub" id="map-sub">Generate the dataset to see the farm. A disease outbreak may already be present here — invisible to a normal camera.</div>
+      <div id="map-empty" class="empty">No dataset loaded yet.</div>
+      <div id="map-container" style="display:none;">
+        <div id="farm-grid" class="farm-grid"></div>
+        <div class="legend" id="legend-row" style="display:none;">
+          <span>Low</span><div class="legend-bar"></div><span>High risk</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="side-stack">
+      <div class="card">
+        <div class="card-title">Selected Zone</div>
+        <div id="zone-empty" class="empty" style="padding:10px 0;">Click a cell on the field view.</div>
+        <div id="zone-info" style="display:none;">
+          <div class="field-row"><span>Zone</span><span class="v" id="zone-id">—</span></div>
+          <div class="field-row"><span>Anomaly score</span><span class="v" id="zone-score">—</span></div>
+          <div class="field-row"><span>Model flag</span><span class="v" id="zone-flag">—</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Risk Analytics</div>
+        <div id="analytics-empty" class="empty" style="padding:10px 0;">Run PCA to populate this.</div>
+        <div id="analytics-info" style="display:none;">
+          <div class="field-row"><span>Flagged zones</span><span class="v" id="stat-zones">—</span></div>
+          <div class="field-row"><span>Acres at risk</span><span class="v" id="stat-acres">—</span></div>
+          <div class="field-row"><span>Variance explained (5 PCs)</span><span class="v" id="stat-variance">—</span></div>
+        </div>
+        <button class="primary" id="btn-pca" disabled style="width:100%; margin-top:14px;">Run PCA risk analysis</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Pipeline</div>
+        <div class="pipeline-step"><div class="dot"></div><div><div class="label">Synthetic hyperspectral cube</div><div class="sub">200 bands × 200 zones</div></div></div>
+        <div class="pipeline-step"><div class="dot"></div><div><div class="label">PCA dimensionality reduction</div><div class="sub">200 bands → 5 components</div></div></div>
+        <div class="pipeline-step"><div class="dot"></div><div><div class="label">Anomaly-based risk flagging</div><div class="sub">No labels used at inference</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="analysis-grid">
+    <div class="panel">
+      <div class="panel-title">Spectral signature</div>
+      <div class="panel-sub">Average reflectance across all bands — healthy zones vs. zones the model flagged as at-risk.</div>
+      <div id="spectrum-empty" class="empty">Run PCA to compare spectra.</div>
+      <div id="spectrum-chart" class="plot"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">PCA explained variance</div>
+      <div class="panel-sub">How much of the 200-band signal each principal component captures.</div>
+      <div id="variance-empty" class="empty">Run PCA to see this.</div>
+      <div id="variance-chart" class="plot"></div>
+      <div class="callout" id="pca-summary" style="display:none;"></div>
+    </div>
+  </div>
+
+  <footer>TerraSpectra — Infotact Solutions project · Data Pipeline (NumPy, scikit-learn PCA) · API (FastAPI) · Dashboard (vanilla JS + Plotly)</footer>
+</div>
+
+<script>
+const API = "http://localhost:8001";
+let farmRows = 10, farmCols = 20;
+let rgbGrid = null, anomalyGrid = null, suspectedGrid = null;
+let currentView = "rgb";
+let selectedZone = null;
+
+function showError(msg) {
+  const el = document.getElementById("error-banner");
+  el.textContent = msg;
+  el.style.display = "block";
+}
+function clearError() {
+  document.getElementById("error-banner").style.display = "none";
+}
+
+function scoreToColor(t) {
+  // t in [0,1]: green -> yellow -> red
+  t = Math.max(0, Math.min(1, t));
+  const stops = [[47,209,128],[232,201,59],[232,93,74]];
+  const seg = t < 0.5 ? 0 : 1;
+  const localT = t < 0.5 ? t / 0.5 : (t - 0.5) / 0.5;
+  const a = stops[seg], b = stops[seg + 1];
+  const r = Math.round(a[0] + (b[0]-a[0])*localT);
+  const g = Math.round(a[1] + (b[1]-a[1])*localT);
+  const bl = Math.round(a[2] + (b[2]-a[2])*localT);
+  return `rgb(${r},${g},${bl})`;
+}
+
+function renderGrid() {
+  const container = document.getElementById("farm-grid");
+  container.style.gridTemplateColumns = `repeat(${farmCols}, 1fr)`;
+  container.innerHTML = "";
+  const maxScore = anomalyGrid ? Math.max(...anomalyGrid.flat()) : 1;
+
+  for (let r = 0; r < farmRows; r++) {
+    for (let c = 0; c < farmCols; c++) {
+      const cell = document.createElement("div");
+      cell.className = "farm-cell";
+      if (selectedZone && selectedZone[0] === r && selectedZone[1] === c) cell.classList.add("selected");
+
+      if (currentView === "rgb" && rgbGrid) {
+        const [rr, gg, bb] = rgbGrid[r][c];
+        cell.style.background = `rgb(${rr},${gg},${bb})`;
+      } else if (currentView === "hyper" && anomalyGrid) {
+        const t = maxScore > 0 ? anomalyGrid[r][c] / maxScore : 0;
+        cell.style.background = scoreToColor(t);
+      } else {
+        cell.style.background = "#142621";
+      }
+      cell.addEventListener("click", () => selectZone(r, c));
+      container.appendChild(cell);
+    }
+  }
+}
+
+function selectZone(r, c) {
+  selectedZone = [r, c];
+  renderGrid();
+  document.getElementById("zone-empty").style.display = "none";
+  document.getElementById("zone-info").style.display = "block";
+  document.getElementById("zone-id").textContent = `Row ${r}, Col ${c}`;
+  if (anomalyGrid) {
+    document.getElementById("zone-score").textContent = anomalyGrid[r][c].toFixed(3);
+    const flagged = suspectedGrid && suspectedGrid[r][c];
+    const flagEl = document.getElementById("zone-flag");
+    flagEl.innerHTML = flagged ? '<span class="badge high">At risk</span>' : '<span class="badge low">Normal</span>';
+  } else {
+    document.getElementById("zone-score").textContent = "run PCA first";
+    document.getElementById("zone-flag").textContent = "—";
+  }
+}
+
+// ---------- toolbar toggle ----------
+document.getElementById("toggle-rgb").addEventListener("click", () => {
+  if (!rgbGrid) return;
+  currentView = "rgb";
+  document.getElementById("toggle-rgb").classList.add("active");
+  document.getElementById("toggle-hyper").classList.remove("active");
+  document.getElementById("map-title").textContent = "Field view — RGB (what a camera sees)";
+  renderGrid();
+});
+document.getElementById("toggle-hyper").addEventListener("click", () => {
+  if (!anomalyGrid) return;
+  currentView = "hyper";
+  document.getElementById("toggle-hyper").classList.add("active");
+  document.getElementById("toggle-rgb").classList.remove("active");
+  document.getElementById("map-title").textContent = "Field view — hyperspectral risk (PCA anomaly score)";
+  renderGrid();
+});
+
+// ---------- 1. Generate data ----------
+document.getElementById("btn-generate").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-generate");
+  btn.disabled = true; btn.textContent = "Generating…";
+  clearError();
+  try {
+    const res = await fetch(`${API}/api/farm/generate?rows=10&cols=20`);
+    if (!res.ok) throw new Error(await res.text());
+    const info = await res.json();
+    farmRows = info.rows; farmCols = info.cols;
+
+    const rgbRes = await fetch(`${API}/api/farm/rgb`);
+    const rgbData = await rgbRes.json();
+    rgbGrid = rgbData.rgb_grid;
+    anomalyGrid = null; suspectedGrid = null; selectedZone = null;
+    currentView = "rgb";
+
+    document.getElementById("map-empty").style.display = "none";
+    document.getElementById("map-container").style.display = "block";
+    document.getElementById("legend-row").style.display = "none";
+    document.getElementById("map-title").textContent = "Field view — RGB (what a camera sees)";
+    renderGrid();
+
+    document.getElementById("toggle-rgb").disabled = false;
+    document.getElementById("toggle-rgb").classList.add("active");
+    document.getElementById("toggle-hyper").disabled = true;
+    document.getElementById("toggle-hyper").classList.remove("active");
+
+    document.getElementById("btn-pca").disabled = false;
+    document.getElementById("zone-empty").style.display = "block";
+    document.getElementById("zone-info").style.display = "none";
+    document.getElementById("analytics-empty").style.display = "block";
+    document.getElementById("analytics-info").style.display = "none";
+    document.getElementById("spectrum-empty").style.display = "block";
+    document.getElementById("variance-empty").style.display = "block";
+    Plotly.purge("spectrum-chart"); Plotly.purge("variance-chart");
+    document.getElementById("pca-summary").style.display = "none";
+  } catch (e) {
+    showError("Couldn't reach the API — is uvicorn running on :8001? " + e.message);
+  }
+  btn.disabled = false; btn.textContent = "Regenerate dataset";
+});
+
+// ---------- 2. Run PCA ----------
+document.getElementById("btn-pca").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-pca");
+  btn.disabled = true; btn.textContent = "Running PCA…";
+  clearError();
+  try {
+    const res = await fetch(`${API}/api/farm/pca`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const result = await res.json();
+
+    anomalyGrid = result.anomaly_grid;
+    suspectedGrid = result.suspected_stress_grid;
+
+    document.getElementById("toggle-hyper").disabled = false;
+    currentView = "hyper";
+    document.getElementById("toggle-hyper").classList.add("active");
+    document.getElementById("toggle-rgb").classList.remove("active");
+    document.getElementById("map-title").textContent = "Field view — hyperspectral risk (PCA anomaly score)";
+    document.getElementById("legend-row").style.display = "flex";
+    renderGrid();
+
+    if (selectedZone) selectZone(selectedZone[0], selectedZone[1]);
+
+    document.getElementById("analytics-empty").style.display = "none";
+    document.getElementById("analytics-info").style.display = "block";
+    document.getElementById("stat-zones").textContent = result.suspected_zone_count;
+    document.getElementById("stat-acres").textContent = result.suspected_acres.toLocaleString() + " ac";
+    const cumVar = result.explained_variance_ratio.reduce((a,b) => a+b, 0) * 100;
+    document.getElementById("stat-variance").textContent = cumVar.toFixed(1) + "%";
+
+    // spectrum chart
+    document.getElementById("spectrum-empty").style.display = "none";
+    Plotly.newPlot("spectrum-chart", [
+      { x: result.wavelengths, y: result.healthy_mean_spectrum, name: "Healthy (avg.)", type: "scatter", mode: "lines", line: { color: "#2FD180", width: 2.5 } },
+      { x: result.wavelengths, y: result.suspected_mean_spectrum, name: "Flagged at-risk (avg.)", type: "scatter", mode: "lines", line: { color: "#E85D4A", width: 2.5 } },
+    ], {
+      paper_bgcolor: "transparent", plot_bgcolor: "transparent",
+      font: { color: "#7C948A", family: "Inter, sans-serif", size: 11.5 },
+      margin: { t: 10, r: 10, b: 40, l: 45 },
+      xaxis: { title: "Wavelength (nm)", gridcolor: "#1E322B" },
+      yaxis: { title: "Reflectance", gridcolor: "#1E322B" },
+      legend: { orientation: "h", y: -0.25 },
+      height: 280,
+    }, { displayModeBar: false });
+
+    // variance chart
+    document.getElementById("variance-empty").style.display = "none";
+    Plotly.newPlot("variance-chart", [{
+      x: result.explained_variance_ratio.map((_, i) => `PC${i+1}`),
+      y: result.explained_variance_ratio.map(v => v * 100),
+      type: "bar", marker: { color: "#2FD180" },
+    }], {
+      paper_bgcolor: "transparent", plot_bgcolor: "transparent",
+      font: { color: "#7C948A", family: "Inter, sans-serif", size: 11.5 },
+      margin: { t: 10, r: 10, b: 40, l: 45 },
+      yaxis: { title: "% variance explained", gridcolor: "#1E322B" },
+      height: 220,
+    }, { displayModeBar: false });
+
+    document.getElementById("pca-summary").style.display = "block";
+    document.getElementById("pca-summary").innerHTML =
+      `PCA flagged <b>${result.suspected_zone_count} zone(s)</b> — about <b>${result.suspected_acres.toLocaleString()} acres</b> — as spectrally anomalous, using only the reflectance data, no labels.`;
+  } catch (e) {
+    showError("PCA failed: " + e.message);
+  }
+  btn.disabled = false; btn.textContent = "Run PCA risk analysis";
+});
+</script>
+</body>
+</html>
