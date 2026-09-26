@@ -1,12 +1,14 @@
 """
 main.py
 --------
-TerraSpectra REST API — Week 1 scope only (data pipeline + PCA proof).
+TerraSpectra REST API.
 
 Endpoints:
     GET  /api/farm/generate   -> generate the mock farm dataset, return metadata
     GET  /api/farm/rgb        -> RGB composite grid, for the "what a camera sees" view
+    GET  /api/farm/gps        -> per-zone latitude/longitude, for GPS-aligned map rendering
     POST /api/farm/pca        -> run PCA, return explained variance + per-zone scores
+    POST /api/model/train     -> train the 3D-CNN, return its predicted risk grid + accuracy
 
 Run with:
     uvicorn main:app --reload --port 8001
@@ -20,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from data import generate_farm_dataset, N_BANDS, WAVELENGTH_RANGE_NM
 from pca_pipeline import run_pca
 
-app = FastAPI(title="TerraSpectra API — Week 1", version="0.1.0")
+app = FastAPI(title="TerraSpectra API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,7 +31,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-STATE = {"dataset": None}
+STATE = {"dataset": None, "model_result": None}
 
 
 @app.get("/api/farm/generate")
@@ -56,6 +58,14 @@ def get_rgb_composite():
     if ds is None:
         raise HTTPException(400, "No farm dataset yet — call /api/farm/generate first")
     return {"rgb_grid": ds.rgb_composite.tolist()}  # (rows, cols, 3) nested list
+
+
+@app.get("/api/farm/gps")
+def get_gps_grid():
+    ds = STATE["dataset"]
+    if ds is None:
+        raise HTTPException(400, "No farm dataset yet — call /api/farm/generate first")
+    return {"lat_grid": ds.lat_grid.tolist(), "lon_grid": ds.lon_grid.tolist()}
 
 
 @app.post("/api/farm/pca")
@@ -98,6 +108,36 @@ def compute_pca(n_components: int = 5):
     }
 
 
+@app.post("/api/model/train")
+def train_cnn(epochs: int = 60):
+    ds = STATE["dataset"]
+    if ds is None:
+        raise HTTPException(400, "No farm dataset yet — call /api/farm/generate first")
+
+    from model import train_model  # imported here so the API still starts up
+                                     # even before torch is installed
+
+    result = train_model(ds.cube, ds.stressed_mask, epochs=epochs)
+    STATE["model_result"] = result
+
+    rows, cols = ds.rows, ds.cols
+    threshold = 0.5
+    flagged = result.predicted_prob_grid > threshold
+
+    return {
+        "predicted_prob_grid": result.predicted_prob_grid.tolist(),
+        "flagged_grid": flagged.tolist(),
+        "flagged_zone_count": int(flagged.sum()),
+        "flagged_acres": float(flagged.sum() * ds.acres_per_zone),
+        "train_accuracy": result.train_accuracy,
+        "val_accuracy": result.val_accuracy,
+        "val_zone_count": result.val_zone_count,
+        "loss_history": result.loss_history,
+        "lat_grid": ds.lat_grid.tolist(),
+        "lon_grid": ds.lon_grid.tolist(),
+    }
+
+
 @app.get("/")
 def root():
-    return {"status": "TerraSpectra API running (Week 1)", "docs": "/docs"}
+    return {"status": "TerraSpectra API running", "docs": "/docs"}

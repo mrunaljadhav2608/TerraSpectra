@@ -48,6 +48,8 @@ class FarmDataset:
     cube: np.ndarray            # shape (rows, cols, N_BANDS) -- the full hyperspectral cube
     rgb_composite: np.ndarray   # shape (rows, cols, 3) uint8 -- what a normal camera would see
     stressed_mask: np.ndarray   # shape (rows, cols) bool -- ground truth, hidden from the "model"
+    lat_grid: np.ndarray        # shape (rows, cols) -- latitude of each zone's center
+    lon_grid: np.ndarray        # shape (rows, cols) -- longitude of each zone's center
     rows: int
     cols: int
     acres_per_zone: float = 5.0
@@ -55,6 +57,21 @@ class FarmDataset:
     @property
     def total_acres(self) -> float:
         return self.rows * self.cols * self.acres_per_zone
+
+
+# Anchors the farm near Maharashtra, India (matching the illustrative region
+# label used on the dashboard). One zone is ~5 acres -- at this latitude,
+# roughly 0.0009 degrees of longitude and 0.00085 degrees of latitude spans
+# that distance, which is what these step sizes approximate.
+BASE_LAT, BASE_LON = 19.1673, 73.0089
+LAT_STEP_DEG = 0.00085
+LON_STEP_DEG = 0.00090
+
+
+def _build_gps_grids(rows: int, cols: int) -> tuple[np.ndarray, np.ndarray]:
+    lat_grid = BASE_LAT - np.arange(rows)[:, None] * LAT_STEP_DEG * np.ones((1, cols))
+    lon_grid = BASE_LON + np.arange(cols)[None, :] * LON_STEP_DEG * np.ones((rows, 1))
+    return lat_grid, lon_grid
 
 
 def _wavelengths() -> np.ndarray:
@@ -120,11 +137,14 @@ def generate_farm_dataset(rows: int = 10, cols: int = 20, seed: int = 7) -> Farm
             stressed_mask[r, c] = is_stressed
 
     rgb_composite = _to_rgb_composite(cube)
+    lat_grid, lon_grid = _build_gps_grids(rows, cols)
 
     return FarmDataset(
         cube=cube,
         rgb_composite=rgb_composite,
         stressed_mask=stressed_mask,
+        lat_grid=lat_grid,
+        lon_grid=lon_grid,
         rows=rows,
         cols=cols,
     )

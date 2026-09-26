@@ -142,7 +142,8 @@
     <div class="spacer"></div>
     <div class="toggle-group">
       <button class="toggle-btn active" id="toggle-rgb" disabled>RGB</button>
-      <button class="toggle-btn" id="toggle-hyper" disabled>Hyperspectral risk</button>
+      <button class="toggle-btn" id="toggle-hyper" disabled>PCA risk</button>
+      <button class="toggle-btn" id="toggle-cnn" disabled>3D-CNN risk</button>
     </div>
   </div>
 
@@ -167,13 +168,15 @@
         <div id="zone-empty" class="empty" style="padding:10px 0;">Click a cell on the field view.</div>
         <div id="zone-info" style="display:none;">
           <div class="field-row"><span>Zone</span><span class="v" id="zone-id">—</span></div>
-          <div class="field-row"><span>Anomaly score</span><span class="v" id="zone-score">—</span></div>
-          <div class="field-row"><span>Model flag</span><span class="v" id="zone-flag">—</span></div>
+          <div class="field-row"><span>GPS</span><span class="v" id="zone-gps" style="font-weight:600; font-size:11.5px;">—</span></div>
+          <div class="field-row"><span>PCA anomaly score</span><span class="v" id="zone-score">—</span></div>
+          <div class="field-row"><span>3D-CNN risk</span><span class="v" id="zone-cnn">—</span></div>
+          <div class="field-row"><span>Flagged</span><span class="v" id="zone-flag">—</span></div>
         </div>
       </div>
 
       <div class="card">
-        <div class="card-title">Risk Analytics</div>
+        <div class="card-title">Risk Analytics (PCA)</div>
         <div id="analytics-empty" class="empty" style="padding:10px 0;">Run PCA to populate this.</div>
         <div id="analytics-info" style="display:none;">
           <div class="field-row"><span>Flagged zones</span><span class="v" id="stat-zones">—</span></div>
@@ -184,10 +187,23 @@
       </div>
 
       <div class="card">
+        <div class="card-title">3D-CNN Model</div>
+        <div id="cnn-empty" class="empty" style="padding:10px 0;">Train the model to populate this.</div>
+        <div id="cnn-info" style="display:none;">
+          <div class="field-row"><span>Flagged zones</span><span class="v" id="cnn-stat-zones">—</span></div>
+          <div class="field-row"><span>Acres at risk</span><span class="v" id="cnn-stat-acres">—</span></div>
+          <div class="field-row"><span>Train accuracy</span><span class="v" id="cnn-stat-train">—</span></div>
+          <div class="field-row"><span>Held-out val accuracy</span><span class="v" id="cnn-stat-val">—</span></div>
+        </div>
+        <button class="primary" id="btn-train" disabled style="width:100%; margin-top:14px;">Train 3D-CNN</button>
+      </div>
+
+      <div class="card">
         <div class="card-title">Pipeline</div>
         <div class="pipeline-step"><div class="dot"></div><div><div class="label">Synthetic hyperspectral cube</div><div class="sub">200 bands × 200 zones</div></div></div>
         <div class="pipeline-step"><div class="dot"></div><div><div class="label">PCA dimensionality reduction</div><div class="sub">200 bands → 5 components</div></div></div>
-        <div class="pipeline-step"><div class="dot"></div><div><div class="label">Anomaly-based risk flagging</div><div class="sub">No labels used at inference</div></div></div>
+        <div class="pipeline-step"><div class="dot"></div><div><div class="label">3D-CNN classifier</div><div class="sub">Trained on labeled zones</div></div></div>
+        <div class="pipeline-step"><div class="dot"></div><div><div class="label">GPS-aligned risk grid</div><div class="sub">Lat/lon per zone</div></div></div>
       </div>
     </div>
   </div>
@@ -195,7 +211,7 @@
   <div class="analysis-grid">
     <div class="panel">
       <div class="panel-title">Spectral signature</div>
-      <div class="panel-sub">Average reflectance across all bands — healthy zones vs. zones the model flagged as at-risk.</div>
+      <div class="panel-sub">Average reflectance across all bands — healthy zones vs. zones PCA flagged as at-risk.</div>
       <div id="spectrum-empty" class="empty">Run PCA to compare spectra.</div>
       <div id="spectrum-chart" class="plot"></div>
     </div>
@@ -208,13 +224,30 @@
     </div>
   </div>
 
-  <footer>TerraSpectra — Infotact Solutions project · Data Pipeline (NumPy, scikit-learn PCA) · API (FastAPI) · Dashboard (vanilla JS + Plotly)</footer>
+  <div class="analysis-grid">
+    <div class="panel">
+      <div class="panel-title">3D-CNN training loss</div>
+      <div class="panel-sub">Loss per epoch while training on labeled zones (lower is better).</div>
+      <div id="loss-empty" class="empty">Train the model to see this.</div>
+      <div id="loss-chart" class="plot"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Model vs. PCA agreement</div>
+      <div class="panel-sub">How the 3D-CNN's flagged zones compare to PCA's, and what that means.</div>
+      <div id="agree-empty" class="empty">Train the model to see this.</div>
+      <div class="callout" id="agree-summary" style="display:none;"></div>
+    </div>
+  </div>
+
+  <footer>TerraSpectra — Infotact Solutions project · Data Pipeline (NumPy, scikit-learn PCA, PyTorch 3D-CNN) · API (FastAPI) · Dashboard (vanilla JS + Plotly)</footer>
 </div>
 
 <script>
 const API = "http://localhost:8001";
 let farmRows = 10, farmCols = 20;
 let rgbGrid = null, anomalyGrid = null, suspectedGrid = null;
+let cnnGrid = null, cnnFlaggedGrid = null;
+let latGrid = null, lonGrid = null;
 let currentView = "rgb";
 let selectedZone = null;
 
@@ -258,6 +291,8 @@ function renderGrid() {
       } else if (currentView === "hyper" && anomalyGrid) {
         const t = maxScore > 0 ? anomalyGrid[r][c] / maxScore : 0;
         cell.style.background = scoreToColor(t);
+      } else if (currentView === "cnn" && cnnGrid) {
+        cell.style.background = scoreToColor(cnnGrid[r][c]);  // already a 0-1 probability
       } else {
         cell.style.background = "#142621";
       }
@@ -273,32 +308,61 @@ function selectZone(r, c) {
   document.getElementById("zone-empty").style.display = "none";
   document.getElementById("zone-info").style.display = "block";
   document.getElementById("zone-id").textContent = `Row ${r}, Col ${c}`;
+
+  if (latGrid) {
+    document.getElementById("zone-gps").textContent = `${latGrid[r][c].toFixed(5)}, ${lonGrid[r][c].toFixed(5)}`;
+  } else {
+    document.getElementById("zone-gps").textContent = "—";
+  }
+
   if (anomalyGrid) {
     document.getElementById("zone-score").textContent = anomalyGrid[r][c].toFixed(3);
-    const flagged = suspectedGrid && suspectedGrid[r][c];
-    const flagEl = document.getElementById("zone-flag");
-    flagEl.innerHTML = flagged ? '<span class="badge high">At risk</span>' : '<span class="badge low">Normal</span>';
   } else {
     document.getElementById("zone-score").textContent = "run PCA first";
-    document.getElementById("zone-flag").textContent = "—";
+  }
+
+  if (cnnGrid) {
+    document.getElementById("zone-cnn").textContent = (cnnGrid[r][c] * 100).toFixed(1) + "%";
+  } else {
+    document.getElementById("zone-cnn").textContent = "train model first";
+  }
+
+  const flagged = (cnnFlaggedGrid && cnnFlaggedGrid[r][c]) || (suspectedGrid && suspectedGrid[r][c]);
+  const flagEl = document.getElementById("zone-flag");
+  if (anomalyGrid || cnnGrid) {
+    flagEl.innerHTML = flagged ? '<span class="badge high">At risk</span>' : '<span class="badge low">Normal</span>';
+  } else {
+    flagEl.textContent = "—";
   }
 }
 
 // ---------- toolbar toggle ----------
+function setActiveToggle(id) {
+  ["toggle-rgb", "toggle-hyper", "toggle-cnn"].forEach(x => document.getElementById(x).classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+}
 document.getElementById("toggle-rgb").addEventListener("click", () => {
   if (!rgbGrid) return;
   currentView = "rgb";
-  document.getElementById("toggle-rgb").classList.add("active");
-  document.getElementById("toggle-hyper").classList.remove("active");
+  setActiveToggle("toggle-rgb");
   document.getElementById("map-title").textContent = "Field view — RGB (what a camera sees)";
+  document.getElementById("legend-row").style.display = "none";
   renderGrid();
 });
 document.getElementById("toggle-hyper").addEventListener("click", () => {
   if (!anomalyGrid) return;
   currentView = "hyper";
-  document.getElementById("toggle-hyper").classList.add("active");
-  document.getElementById("toggle-rgb").classList.remove("active");
-  document.getElementById("map-title").textContent = "Field view — hyperspectral risk (PCA anomaly score)";
+  setActiveToggle("toggle-hyper");
+  document.getElementById("map-title").textContent = "Field view — PCA risk (anomaly score)";
+  document.getElementById("legend-row").style.display = "flex";
+  renderGrid();
+});
+document.getElementById("toggle-cnn").addEventListener("click", () => {
+  if (!cnnGrid) return;
+  currentView = "cnn";
+  setActiveToggle("toggle-cnn");
+  document.getElementById("map-title").textContent = "Field view — 3D-CNN predicted risk";
+  document.getElementById("legend-row").style.display = "flex";
   renderGrid();
 });
 
@@ -316,7 +380,12 @@ document.getElementById("btn-generate").addEventListener("click", async () => {
     const rgbRes = await fetch(`${API}/api/farm/rgb`);
     const rgbData = await rgbRes.json();
     rgbGrid = rgbData.rgb_grid;
-    anomalyGrid = null; suspectedGrid = null; selectedZone = null;
+
+    const gpsRes = await fetch(`${API}/api/farm/gps`);
+    const gpsData = await gpsRes.json();
+    latGrid = gpsData.lat_grid; lonGrid = gpsData.lon_grid;
+
+    anomalyGrid = null; suspectedGrid = null; cnnGrid = null; cnnFlaggedGrid = null; selectedZone = null;
     currentView = "rgb";
 
     document.getElementById("map-empty").style.display = "none";
@@ -326,19 +395,25 @@ document.getElementById("btn-generate").addEventListener("click", async () => {
     renderGrid();
 
     document.getElementById("toggle-rgb").disabled = false;
-    document.getElementById("toggle-rgb").classList.add("active");
+    setActiveToggle("toggle-rgb");
     document.getElementById("toggle-hyper").disabled = true;
-    document.getElementById("toggle-hyper").classList.remove("active");
+    document.getElementById("toggle-cnn").disabled = true;
 
     document.getElementById("btn-pca").disabled = false;
+    document.getElementById("btn-train").disabled = false;
     document.getElementById("zone-empty").style.display = "block";
     document.getElementById("zone-info").style.display = "none";
     document.getElementById("analytics-empty").style.display = "block";
     document.getElementById("analytics-info").style.display = "none";
+    document.getElementById("cnn-empty").style.display = "block";
+    document.getElementById("cnn-info").style.display = "none";
     document.getElementById("spectrum-empty").style.display = "block";
     document.getElementById("variance-empty").style.display = "block";
-    Plotly.purge("spectrum-chart"); Plotly.purge("variance-chart");
+    document.getElementById("loss-empty").style.display = "block";
+    document.getElementById("agree-empty").style.display = "block";
+    Plotly.purge("spectrum-chart"); Plotly.purge("variance-chart"); Plotly.purge("loss-chart");
     document.getElementById("pca-summary").style.display = "none";
+    document.getElementById("agree-summary").style.display = "none";
   } catch (e) {
     showError("Couldn't reach the API — is uvicorn running on :8001? " + e.message);
   }
@@ -360,9 +435,8 @@ document.getElementById("btn-pca").addEventListener("click", async () => {
 
     document.getElementById("toggle-hyper").disabled = false;
     currentView = "hyper";
-    document.getElementById("toggle-hyper").classList.add("active");
-    document.getElementById("toggle-rgb").classList.remove("active");
-    document.getElementById("map-title").textContent = "Field view — hyperspectral risk (PCA anomaly score)";
+    setActiveToggle("toggle-hyper");
+    document.getElementById("map-title").textContent = "Field view — PCA risk (anomaly score)";
     document.getElementById("legend-row").style.display = "flex";
     renderGrid();
 
@@ -375,11 +449,10 @@ document.getElementById("btn-pca").addEventListener("click", async () => {
     const cumVar = result.explained_variance_ratio.reduce((a,b) => a+b, 0) * 100;
     document.getElementById("stat-variance").textContent = cumVar.toFixed(1) + "%";
 
-    // spectrum chart
     document.getElementById("spectrum-empty").style.display = "none";
     Plotly.newPlot("spectrum-chart", [
       { x: result.wavelengths, y: result.healthy_mean_spectrum, name: "Healthy (avg.)", type: "scatter", mode: "lines", line: { color: "#2FD180", width: 2.5 } },
-      { x: result.wavelengths, y: result.suspected_mean_spectrum, name: "Flagged at-risk (avg.)", type: "scatter", mode: "lines", line: { color: "#E85D4A", width: 2.5 } },
+      { x: result.wavelengths, y: result.suspected_mean_spectrum, name: "PCA-flagged (avg.)", type: "scatter", mode: "lines", line: { color: "#E85D4A", width: 2.5 } },
     ], {
       paper_bgcolor: "transparent", plot_bgcolor: "transparent",
       font: { color: "#7C948A", family: "Inter, sans-serif", size: 11.5 },
@@ -390,7 +463,6 @@ document.getElementById("btn-pca").addEventListener("click", async () => {
       height: 280,
     }, { displayModeBar: false });
 
-    // variance chart
     document.getElementById("variance-empty").style.display = "none";
     Plotly.newPlot("variance-chart", [{
       x: result.explained_variance_ratio.map((_, i) => `PC${i+1}`),
@@ -411,6 +483,70 @@ document.getElementById("btn-pca").addEventListener("click", async () => {
     showError("PCA failed: " + e.message);
   }
   btn.disabled = false; btn.textContent = "Run PCA risk analysis";
+});
+
+// ---------- 3. Train 3D-CNN ----------
+document.getElementById("btn-train").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-train");
+  btn.disabled = true; btn.textContent = "Training… (may take a minute)";
+  clearError();
+  try {
+    const res = await fetch(`${API}/api/model/train?epochs=60`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const result = await res.json();
+
+    cnnGrid = result.predicted_prob_grid;
+    cnnFlaggedGrid = result.flagged_grid;
+
+    document.getElementById("toggle-cnn").disabled = false;
+    currentView = "cnn";
+    setActiveToggle("toggle-cnn");
+    document.getElementById("map-title").textContent = "Field view — 3D-CNN predicted risk";
+    document.getElementById("legend-row").style.display = "flex";
+    renderGrid();
+
+    if (selectedZone) selectZone(selectedZone[0], selectedZone[1]);
+
+    document.getElementById("cnn-empty").style.display = "none";
+    document.getElementById("cnn-info").style.display = "block";
+    document.getElementById("cnn-stat-zones").textContent = result.flagged_zone_count;
+    document.getElementById("cnn-stat-acres").textContent = result.flagged_acres.toLocaleString() + " ac";
+    document.getElementById("cnn-stat-train").textContent = (result.train_accuracy * 100).toFixed(1) + "%";
+    document.getElementById("cnn-stat-val").textContent =
+      (isNaN(result.val_accuracy) ? "n/a" : (result.val_accuracy * 100).toFixed(1) + "%") +
+      ` (${result.val_zone_count} zones)`;
+
+    document.getElementById("loss-empty").style.display = "none";
+    Plotly.newPlot("loss-chart", [{
+      x: result.loss_history.map((_, i) => i + 1),
+      y: result.loss_history,
+      type: "scatter", mode: "lines", line: { color: "#E8A93B", width: 2.5 },
+    }], {
+      paper_bgcolor: "transparent", plot_bgcolor: "transparent",
+      font: { color: "#7C948A", family: "Inter, sans-serif", size: 11.5 },
+      margin: { t: 10, r: 10, b: 40, l: 45 },
+      xaxis: { title: "Epoch", gridcolor: "#1E322B" },
+      yaxis: { title: "Loss", gridcolor: "#1E322B" },
+      height: 220,
+    }, { displayModeBar: false });
+
+    document.getElementById("agree-empty").style.display = "none";
+    document.getElementById("agree-summary").style.display = "block";
+    let agreeMsg = `The 3D-CNN flagged <b>${result.flagged_zone_count} zone(s)</b> (${result.flagged_acres.toLocaleString()} acres) as at-risk, `
+      + `reaching <b>${(result.train_accuracy*100).toFixed(1)}%</b> training accuracy and `
+      + `<b>${isNaN(result.val_accuracy) ? "n/a" : (result.val_accuracy*100).toFixed(1)+"%"}</b> accuracy on zones it never trained on.`;
+    if (suspectedGrid) {
+      let agree = 0;
+      for (let r = 0; r < farmRows; r++) for (let c = 0; c < farmCols; c++)
+        if (Boolean(suspectedGrid[r][c]) === Boolean(cnnFlaggedGrid[r][c])) agree++;
+      const agreePct = (agree / (farmRows*farmCols) * 100).toFixed(1);
+      agreeMsg += ` It agrees with PCA's flagging on <b>${agreePct}%</b> of zones.`;
+    }
+    document.getElementById("agree-summary").innerHTML = agreeMsg;
+  } catch (e) {
+    showError("Training failed: " + e.message + " — if this mentions torch, run: pip install torch");
+  }
+  btn.disabled = false; btn.textContent = "Train 3D-CNN";
 });
 </script>
 </body>
