@@ -9,6 +9,8 @@ Endpoints:
     GET  /api/farm/gps        -> per-zone latitude/longitude, for GPS-aligned map rendering
     POST /api/farm/pca        -> run PCA, return explained variance + per-zone scores
     POST /api/model/train     -> train the 3D-CNN, return its predicted risk grid + accuracy
+    POST /api/model/train-vit -> train the Hybrid 3D-CNN + Vision Transformer, same response shape
+    GET  /api/analytics/top-risk -> ranked list of the highest-risk zones across PCA + both models
 
 Run with:
     uvicorn main:app --reload --port 8001
@@ -31,13 +33,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-STATE = {"dataset": None, "model_result": None}
+STATE = {"dataset": None, "model_result": None, "hybrid_result": None, "pca_result": None}
 
 
 @app.get("/api/farm/generate")
 def generate(rows: int = 10, cols: int = 20, seed: int = 7):
     ds = generate_farm_dataset(rows=rows, cols=cols, seed=seed)
     STATE["dataset"] = ds
+    STATE["model_result"] = None
+    STATE["hybrid_result"] = None
+    STATE["pca_result"] = None
 
     cube_size_mb = ds.cube.nbytes / (1024 * 1024)
 
@@ -95,6 +100,8 @@ def compute_pca(n_components: int = 5):
     healthy_mean = flat_cube[~flat_suspected].mean(axis=0) if (~flat_suspected).any() else np.zeros(N_BANDS)
     suspected_mean = flat_cube[flat_suspected].mean(axis=0) if flat_suspected.any() else np.zeros(N_BANDS)
 
+    STATE["pca_result"] = {"anomaly_grid": anomaly_grid, "suspected_mask": suspected_mask}
+
     return {
         "explained_variance_ratio": result.explained_variance_ratio.tolist(),
         "pc1_pc2": result.components_2d.tolist(),
@@ -136,6 +143,82 @@ def train_cnn(epochs: int = 60):
         "lat_grid": ds.lat_grid.tolist(),
         "lon_grid": ds.lon_grid.tolist(),
     }
+
+
+@app.post("/api/model/train-vit")
+def train_hybrid_cnn_vit(epochs: int = 60):
+    ds = STATE["dataset"]
+    if ds is None:
+        raise HTTPException(400, "No farm dataset yet — call /api/farm/generate first")
+
+    from model import train_model
+
+    result = train_model(ds.cube, ds.stressed_mask, epochs=epochs, architecture="hybrid")
+    STATE["hybrid_result"] = result
+
+    rows, cols = ds.rows, ds.cols
+    threshold = 0.5
+    flagged = result.predicted_prob_grid > threshold
+
+    return {
+        "predicted_prob_grid": result.predicted_prob_grid.tolist(),
+        "flagged_grid": flagged.tolist(),
+        "flagged_zone_count": int(flagged.sum()),
+        "flagged_acres": float(flagged.sum() * ds.acres_per_zone),
+        "train_accuracy": result.train_accuracy,
+        "val_accuracy": result.val_accuracy,
+        "val_zone_count": result.val_zone_count,
+        "loss_history": result.loss_history,
+        "lat_grid": ds.lat_grid.tolist(),
+        "lon_grid": ds.lon_grid.tolist(),
+    }
+
+
+@app.get("/api/analytics/top-risk")
+def top_risk_zones(limit: int = 5):
+    """
+    Dynamic risk-analytics summary: ranks zones by whichever risk signals
+    have been computed so far (PCA, CNN, and/or the CNN+ViT hybrid),
+    combining them into a single sortable list for the sidebar. Only
+    sources that have actually been run are included -- this never
+    fabricates a score for a model that hasn't been trained yet.
+    """
+    ds = STATE["dataset"]
+    if ds is None:
+        raise HTTPException(400, "No farm dataset yet — call /api/farm/generate first")
+
+    rows, cols = ds.rows, ds.cols
+    sources = {}
+    if STATE["pca_result"] is not None:
+        sources["pca"] = STATE["pca_result"]["anomaly_grid"] / max(1e-9, STATE["pca_result"]["anomaly_grid"].max())
+    if STATE["model_result"] is not None:
+        sources["cnn"] = STATE["model_result"].predicted_prob_grid
+    if STATE["hybrid_result"] is not None:
+        sources["cnn_vit"] = STATE["hybrid_result"].predicted_prob_grid
+
+    if not sources:
+        raise HTTPException(400, "No risk analysis has been run yet — run PCA or train a model first")
+
+    combined = np.mean(np.stack(list(sources.values())), axis=0)  # average of whatever's available
+    flat_idx = np.argsort(-combined.flatten())[:limit]
+
+    zones = []
+    for idx in flat_idx:
+        r, c = int(idx // cols), int(idx % cols)
+        entry = {
+            "row": r, "col": c,
+            "lat": float(ds.lat_grid[r, c]), "lon": float(ds.lon_grid[r, c]),
+            "combined_risk": float(combined[r, c]),
+        }
+        if "pca" in sources:
+            entry["pca_score"] = float(sources["pca"][r, c])
+        if "cnn" in sources:
+            entry["cnn_risk"] = float(sources["cnn"][r, c])
+        if "cnn_vit" in sources:
+            entry["cnn_vit_risk"] = float(sources["cnn_vit"][r, c])
+        zones.append(entry)
+
+    return {"sources_used": list(sources.keys()), "top_zones": zones}
 
 
 @app.get("/")

@@ -62,34 +62,101 @@ class TrainResult:
     loss_history: list
 
 
+def _conv_features():
+    """
+    The 3D convolution stack shared by both models: two Conv3d blocks that
+    downsample mainly along the spectral axis (stride 4) while keeping the
+    small k x k spatial window mostly intact. For a PATCH_SIZE=3 patch over
+    200 bands, this produces a (16, 13, 3, 3) feature map -- 16 channels,
+    a spectral sequence of length 13, 3x3 spatial.
+    """
+    import torch.nn as nn
+
+    return nn.Sequential(
+        nn.Conv3d(1, 8, kernel_size=(9, 3, 3), stride=(4, 1, 1), padding=(4, 1, 1)),
+        nn.BatchNorm3d(8),
+        nn.ReLU(inplace=True),
+        nn.Conv3d(8, 16, kernel_size=(9, 3, 3), stride=(4, 1, 1), padding=(4, 1, 1)),
+        nn.BatchNorm3d(16),
+        nn.ReLU(inplace=True),
+    )
+
+
 def build_model(n_bands: int, k: int = PATCH_SIZE):
     """
-    A deliberately small 3D-CNN: two Conv3d blocks that downsample mainly
-    along the spectral axis (stride 4) while keeping the small spatial
-    window mostly intact, then a global pool and a 2-class head.
+    The plain 3D-CNN (Week 2): conv features -> global average pool -> a
+    2-class head. No attention -- every spectral position contributes
+    equally regardless of how informative it is.
     """
     import torch.nn as nn
 
     class TerraCNN(nn.Module):
         def __init__(self):
             super().__init__()
-            self.features = nn.Sequential(
-                nn.Conv3d(1, 8, kernel_size=(9, 3, 3), stride=(4, 1, 1), padding=(4, 1, 1)),
-                nn.BatchNorm3d(8),
-                nn.ReLU(inplace=True),
-                nn.Conv3d(8, 16, kernel_size=(9, 3, 3), stride=(4, 1, 1), padding=(4, 1, 1)),
-                nn.BatchNorm3d(16),
-                nn.ReLU(inplace=True),
-                nn.AdaptiveAvgPool3d((1, 1, 1)),
-            )
+            self.features = _conv_features()
+            self.pool = nn.AdaptiveAvgPool3d((1, 1, 1))
             self.head = nn.Linear(16, 2)
 
         def forward(self, x):
             x = self.features(x)
+            x = self.pool(x)
             x = x.view(x.size(0), -1)
             return self.head(x)
 
     return TerraCNN()
+
+
+def build_hybrid_model(n_bands: int, k: int = PATCH_SIZE):
+    """
+    Week 3 -- the Hybrid 3D-CNN + Vision Transformer. Same conv feature
+    extractor as the plain CNN, but instead of averaging every spectral
+    position equally, it treats the 13-step spectral sequence coming out
+    of the conv stack as a sequence of 13 "tokens" (averaging away the
+    small 3x3 spatial window first) and runs a single-layer Transformer
+    self-attention block over them.
+
+    Why this matters for THIS problem specifically: the plain CNN's conv
+    kernels only look at nearby spectral bands at a time (local patterns).
+    Self-attention lets the model directly relate a band in the red-edge
+    region to a band far away in the NIR/SWIR region in one step, without
+    needing many stacked conv layers to bridge that distance -- closer to
+    how the disease signature actually works (a coordinated shift across
+    multiple, not-necessarily-adjacent, spectral regions).
+    """
+    import torch
+    import torch.nn as nn
+
+    class TerraHybridCNNViT(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.features = _conv_features()
+            # norm_first=True (pre-norm): the layer normalizes only the input
+            # to attention / feed-forward, and adds the result back onto the
+            # un-normalized original. The default (post-norm) layer instead
+            # re-normalizes every token's 16 channels after each sub-block,
+            # which strips out overall magnitude -- and magnitude (a drop in
+            # reflectance) is exactly where this disease signal lives. The
+            # first version of this model used the default and collapsed to
+            # predicting "stressed" for every zone.
+            self.attn = nn.TransformerEncoderLayer(
+                d_model=16, nhead=4, dim_feedforward=32,
+                batch_first=True, dropout=0.0, norm_first=True,
+            )
+            # The head sees BOTH the plain pooled CNN features and the
+            # attention-refined features, so this model can always fall back
+            # on exactly what the plain CNN uses. Attention can only add
+            # information, never take the CNN's information away.
+            self.head = nn.Linear(32, 2)
+
+        def forward(self, x):
+            x = self.features(x)                      # (B, 16, D, k, k)
+            x = x.mean(dim=[3, 4])                      # (B, 16, D) -- average away the small spatial window
+            seq = x.permute(0, 2, 1)                     # (B, D, 16) -- a sequence of D spectral tokens
+            attended = self.attn(seq)                    # self-attention across the spectral sequence
+            combined = torch.cat([seq.mean(dim=1), attended.mean(dim=1)], dim=1)  # (B, 32)
+            return self.head(combined)
+
+    return TerraHybridCNNViT()
 
 
 def _oversample_minority(patches: np.ndarray, labels: np.ndarray, rng: np.random.Generator, noise_std: float = 0.01) -> tuple:
@@ -131,12 +198,19 @@ def train_model(
     val_fraction: float = 0.2,
     seed: int = 0,
     batch_size: int = 16,
+    architecture: str = "cnn",
 ) -> TrainResult:
     """
-    Trains the 3D-CNN on ALL zones' patches, holding out a random
-    `val_fraction` of zones (not used in training OR oversampling at all)
-    to report an honest accuracy number rather than one measured on data
-    the model has seen.
+    Trains either the plain 3D-CNN (architecture="cnn", Week 2) or the
+    Hybrid 3D-CNN + Vision Transformer (architecture="hybrid", Week 3) on
+    ALL zones' patches, holding out a random `val_fraction` of zones (not
+    used in training OR oversampling at all) to report an honest accuracy
+    number rather than one measured on data the model has seen.
+
+    Both architectures share this exact training loop (oversampling,
+    mini-batches, gradient clipping) deliberately -- these were the fixes
+    that solved a real training-collapse bug in Week 2, so Week 3 reuses
+    the same proven recipe rather than retuning from scratch.
 
     Note on labels: this step DOES use the ground-truth stressed_mask to
     train (that's what "supervised learning" means -- Week 1's PCA step
@@ -166,9 +240,17 @@ def train_model(
     X_val = torch.from_numpy(patches[val_idx])
     y_val = torch.from_numpy(labels[val_idx])
 
-    model = build_model(n_bands)
+    model = build_hybrid_model(n_bands) if architecture == "hybrid" else build_model(n_bands)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    # The hybrid's loss was spiky and ended training on a spike. Cosine decay
+    # shrinks the learning rate smoothly toward zero so the final weights
+    # settle. Applied to the hybrid only: the plain CNN already reaches 100%
+    # with a constant rate, so its training path is deliberately left alone.
+    scheduler = (
+        torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        if architecture == "hybrid" else None
+    )
 
     n_train = len(y_train)
     loss_history = []
@@ -186,6 +268,8 @@ def train_model(
             optimizer.step()
             epoch_losses.append(float(loss.item()))
         loss_history.append(float(np.mean(epoch_losses)))
+        if scheduler is not None:
+            scheduler.step()
 
     model.eval()
     with torch.no_grad():

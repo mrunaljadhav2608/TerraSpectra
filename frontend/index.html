@@ -144,6 +144,7 @@
       <button class="toggle-btn active" id="toggle-rgb" disabled>RGB</button>
       <button class="toggle-btn" id="toggle-hyper" disabled>PCA risk</button>
       <button class="toggle-btn" id="toggle-cnn" disabled>3D-CNN risk</button>
+      <button class="toggle-btn" id="toggle-vit" disabled>3D-CNN+ViT risk</button>
     </div>
   </div>
 
@@ -171,6 +172,7 @@
           <div class="field-row"><span>GPS</span><span class="v" id="zone-gps" style="font-weight:600; font-size:11.5px;">—</span></div>
           <div class="field-row"><span>PCA anomaly score</span><span class="v" id="zone-score">—</span></div>
           <div class="field-row"><span>3D-CNN risk</span><span class="v" id="zone-cnn">—</span></div>
+          <div class="field-row"><span>3D-CNN+ViT risk</span><span class="v" id="zone-vit">—</span></div>
           <div class="field-row"><span>Flagged</span><span class="v" id="zone-flag">—</span></div>
         </div>
       </div>
@@ -199,10 +201,34 @@
       </div>
 
       <div class="card">
+        <div class="card-title">3D-CNN + ViT Model</div>
+        <div class="panel-sub" style="margin:-6px 0 10px;">Adds self-attention across the spectral sequence on top of the same CNN features.</div>
+        <div id="vit-empty" class="empty" style="padding:10px 0;">Train the hybrid model to populate this.</div>
+        <div id="vit-info" style="display:none;">
+          <div class="field-row"><span>Flagged zones</span><span class="v" id="vit-stat-zones">—</span></div>
+          <div class="field-row"><span>Acres at risk</span><span class="v" id="vit-stat-acres">—</span></div>
+          <div class="field-row"><span>Train accuracy</span><span class="v" id="vit-stat-train">—</span></div>
+          <div class="field-row"><span>Held-out val accuracy</span><span class="v" id="vit-stat-val">—</span></div>
+        </div>
+        <button class="primary" id="btn-train-vit" disabled style="width:100%; margin-top:14px;">Train 3D-CNN + ViT</button>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Top At-Risk Zones</div>
+        <div class="panel-sub" style="margin:-6px 0 10px;">Ranked by the average of every risk signal computed so far.</div>
+        <div id="toprisk-empty" class="empty" style="padding:10px 0;">Run PCA or train a model first.</div>
+        <table id="toprisk-table" style="display:none; width:100%; border-collapse:collapse; font-size:12px;">
+          <thead><tr style="color:var(--text-dim); text-align:left;"><th style="padding:4px 0;">Zone</th><th>GPS</th><th style="text-align:right;">Risk</th></tr></thead>
+          <tbody id="toprisk-body"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
         <div class="card-title">Pipeline</div>
         <div class="pipeline-step"><div class="dot"></div><div><div class="label">Synthetic hyperspectral cube</div><div class="sub">200 bands × 200 zones</div></div></div>
         <div class="pipeline-step"><div class="dot"></div><div><div class="label">PCA dimensionality reduction</div><div class="sub">200 bands → 5 components</div></div></div>
         <div class="pipeline-step"><div class="dot"></div><div><div class="label">3D-CNN classifier</div><div class="sub">Trained on labeled zones</div></div></div>
+        <div class="pipeline-step"><div class="dot"></div><div><div class="label">3D-CNN + ViT hybrid</div><div class="sub">Self-attention across spectral bands</div></div></div>
         <div class="pipeline-step"><div class="dot"></div><div><div class="label">GPS-aligned risk grid</div><div class="sub">Lat/lon per zone</div></div></div>
       </div>
     </div>
@@ -239,7 +265,22 @@
     </div>
   </div>
 
-  <footer>TerraSpectra — Infotact Solutions project · Data Pipeline (NumPy, scikit-learn PCA, PyTorch 3D-CNN) · API (FastAPI) · Dashboard (vanilla JS + Plotly)</footer>
+  <div class="analysis-grid">
+    <div class="panel">
+      <div class="panel-title">3D-CNN + ViT training loss</div>
+      <div class="panel-sub">Loss per epoch for the hybrid model, same training recipe as the plain CNN.</div>
+      <div id="vit-loss-empty" class="empty">Train the hybrid model to see this.</div>
+      <div id="vit-loss-chart" class="plot"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Three-way agreement</div>
+      <div class="panel-sub">How often PCA, the 3D-CNN, and the 3D-CNN+ViT agree on which zones are at risk.</div>
+      <div id="vit-agree-empty" class="empty">Train the hybrid model to see this.</div>
+      <div class="callout" id="vit-agree-summary" style="display:none;"></div>
+    </div>
+  </div>
+
+  <footer>TerraSpectra — Infotact Solutions project · Data Pipeline (NumPy, scikit-learn PCA, PyTorch 3D-CNN + ViT) · API (FastAPI) · Dashboard (vanilla JS + Plotly)</footer>
 </div>
 
 <script>
@@ -247,6 +288,7 @@ const API = "http://localhost:8001";
 let farmRows = 10, farmCols = 20;
 let rgbGrid = null, anomalyGrid = null, suspectedGrid = null;
 let cnnGrid = null, cnnFlaggedGrid = null;
+let vitGrid = null, vitFlaggedGrid = null;
 let latGrid = null, lonGrid = null;
 let currentView = "rgb";
 let selectedZone = null;
@@ -293,6 +335,8 @@ function renderGrid() {
         cell.style.background = scoreToColor(t);
       } else if (currentView === "cnn" && cnnGrid) {
         cell.style.background = scoreToColor(cnnGrid[r][c]);  // already a 0-1 probability
+      } else if (currentView === "vit" && vitGrid) {
+        cell.style.background = scoreToColor(vitGrid[r][c]);
       } else {
         cell.style.background = "#142621";
       }
@@ -327,7 +371,13 @@ function selectZone(r, c) {
     document.getElementById("zone-cnn").textContent = "train model first";
   }
 
-  const flagged = (cnnFlaggedGrid && cnnFlaggedGrid[r][c]) || (suspectedGrid && suspectedGrid[r][c]);
+  if (vitGrid) {
+    document.getElementById("zone-vit").textContent = (vitGrid[r][c] * 100).toFixed(1) + "%";
+  } else {
+    document.getElementById("zone-vit").textContent = "train hybrid first";
+  }
+
+  const flagged = (vitFlaggedGrid && vitFlaggedGrid[r][c]) || (cnnFlaggedGrid && cnnFlaggedGrid[r][c]) || (suspectedGrid && suspectedGrid[r][c]);
   const flagEl = document.getElementById("zone-flag");
   if (anomalyGrid || cnnGrid) {
     flagEl.innerHTML = flagged ? '<span class="badge high">At risk</span>' : '<span class="badge low">Normal</span>';
@@ -338,7 +388,7 @@ function selectZone(r, c) {
 
 // ---------- toolbar toggle ----------
 function setActiveToggle(id) {
-  ["toggle-rgb", "toggle-hyper", "toggle-cnn"].forEach(x => document.getElementById(x).classList.remove("active"));
+  ["toggle-rgb", "toggle-hyper", "toggle-cnn", "toggle-vit"].forEach(x => document.getElementById(x).classList.remove("active"));
   document.getElementById(id).classList.add("active");
 }
 document.getElementById("toggle-rgb").addEventListener("click", () => {
@@ -365,6 +415,14 @@ document.getElementById("toggle-cnn").addEventListener("click", () => {
   document.getElementById("legend-row").style.display = "flex";
   renderGrid();
 });
+document.getElementById("toggle-vit").addEventListener("click", () => {
+  if (!vitGrid) return;
+  currentView = "vit";
+  setActiveToggle("toggle-vit");
+  document.getElementById("map-title").textContent = "Field view — 3D-CNN + ViT predicted risk";
+  document.getElementById("legend-row").style.display = "flex";
+  renderGrid();
+});
 
 // ---------- 1. Generate data ----------
 document.getElementById("btn-generate").addEventListener("click", async () => {
@@ -385,7 +443,8 @@ document.getElementById("btn-generate").addEventListener("click", async () => {
     const gpsData = await gpsRes.json();
     latGrid = gpsData.lat_grid; lonGrid = gpsData.lon_grid;
 
-    anomalyGrid = null; suspectedGrid = null; cnnGrid = null; cnnFlaggedGrid = null; selectedZone = null;
+    anomalyGrid = null; suspectedGrid = null; cnnGrid = null; cnnFlaggedGrid = null;
+    vitGrid = null; vitFlaggedGrid = null; selectedZone = null;
     currentView = "rgb";
 
     document.getElementById("map-empty").style.display = "none";
@@ -398,27 +457,62 @@ document.getElementById("btn-generate").addEventListener("click", async () => {
     setActiveToggle("toggle-rgb");
     document.getElementById("toggle-hyper").disabled = true;
     document.getElementById("toggle-cnn").disabled = true;
+    document.getElementById("toggle-vit").disabled = true;
 
     document.getElementById("btn-pca").disabled = false;
     document.getElementById("btn-train").disabled = false;
+    document.getElementById("btn-train-vit").disabled = false;
     document.getElementById("zone-empty").style.display = "block";
     document.getElementById("zone-info").style.display = "none";
     document.getElementById("analytics-empty").style.display = "block";
     document.getElementById("analytics-info").style.display = "none";
     document.getElementById("cnn-empty").style.display = "block";
     document.getElementById("cnn-info").style.display = "none";
+    document.getElementById("vit-empty").style.display = "block";
+    document.getElementById("vit-info").style.display = "none";
+    document.getElementById("toprisk-empty").style.display = "block";
+    document.getElementById("toprisk-table").style.display = "none";
     document.getElementById("spectrum-empty").style.display = "block";
     document.getElementById("variance-empty").style.display = "block";
     document.getElementById("loss-empty").style.display = "block";
     document.getElementById("agree-empty").style.display = "block";
-    Plotly.purge("spectrum-chart"); Plotly.purge("variance-chart"); Plotly.purge("loss-chart");
+    document.getElementById("vit-loss-empty").style.display = "block";
+    document.getElementById("vit-agree-empty").style.display = "block";
+    Plotly.purge("spectrum-chart"); Plotly.purge("variance-chart"); Plotly.purge("loss-chart"); Plotly.purge("vit-loss-chart");
     document.getElementById("pca-summary").style.display = "none";
     document.getElementById("agree-summary").style.display = "none";
+    document.getElementById("vit-agree-summary").style.display = "none";
   } catch (e) {
     showError("Couldn't reach the API — is uvicorn running on :8001? " + e.message);
   }
   btn.disabled = false; btn.textContent = "Regenerate dataset";
 });
+
+// ---------- dynamic top-risk list (refreshed after PCA / CNN / ViT runs) ----------
+async function refreshTopRisk() {
+  try {
+    const res = await fetch(`${API}/api/analytics/top-risk?limit=5`);
+    if (!res.ok) return;  // nothing computed yet — leave the empty state as is
+    const result = await res.json();
+
+    document.getElementById("toprisk-empty").style.display = "none";
+    const table = document.getElementById("toprisk-table");
+    table.style.display = "table";
+    const body = document.getElementById("toprisk-body");
+    body.innerHTML = "";
+    result.top_zones.forEach(z => {
+      const row = document.createElement("tr");
+      row.style.cursor = "pointer";
+      row.style.borderTop = "1px solid var(--border)";
+      row.innerHTML = `
+        <td style="padding:5px 0;">R${z.row},C${z.col}</td>
+        <td style="font-size:10.5px; color:var(--text-dim);">${z.lat.toFixed(4)}, ${z.lon.toFixed(4)}</td>
+        <td style="text-align:right; font-weight:700; color:var(--red);">${(z.combined_risk*100).toFixed(0)}%</td>`;
+      row.addEventListener("click", () => selectZone(z.row, z.col));
+      body.appendChild(row);
+    });
+  } catch (e) { /* non-critical — silently leave the list as it was */ }
+}
 
 // ---------- 2. Run PCA ----------
 document.getElementById("btn-pca").addEventListener("click", async () => {
@@ -479,6 +573,8 @@ document.getElementById("btn-pca").addEventListener("click", async () => {
     document.getElementById("pca-summary").style.display = "block";
     document.getElementById("pca-summary").innerHTML =
       `PCA flagged <b>${result.suspected_zone_count} zone(s)</b> — about <b>${result.suspected_acres.toLocaleString()} acres</b> — as spectrally anomalous, using only the reflectance data, no labels.`;
+
+    refreshTopRisk();
   } catch (e) {
     showError("PCA failed: " + e.message);
   }
@@ -543,10 +639,86 @@ document.getElementById("btn-train").addEventListener("click", async () => {
       agreeMsg += ` It agrees with PCA's flagging on <b>${agreePct}%</b> of zones.`;
     }
     document.getElementById("agree-summary").innerHTML = agreeMsg;
+
+    refreshTopRisk();
   } catch (e) {
     showError("Training failed: " + e.message + " — if this mentions torch, run: pip install torch");
   }
   btn.disabled = false; btn.textContent = "Train 3D-CNN";
+});
+
+// ---------- 4. Train 3D-CNN + ViT hybrid ----------
+document.getElementById("btn-train-vit").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-train-vit");
+  btn.disabled = true; btn.textContent = "Training hybrid… (may take a minute)";
+  clearError();
+  try {
+    const res = await fetch(`${API}/api/model/train-vit?epochs=60`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const result = await res.json();
+
+    vitGrid = result.predicted_prob_grid;
+    vitFlaggedGrid = result.flagged_grid;
+
+    document.getElementById("toggle-vit").disabled = false;
+    currentView = "vit";
+    setActiveToggle("toggle-vit");
+    document.getElementById("map-title").textContent = "Field view — 3D-CNN + ViT predicted risk";
+    document.getElementById("legend-row").style.display = "flex";
+    renderGrid();
+
+    if (selectedZone) selectZone(selectedZone[0], selectedZone[1]);
+
+    document.getElementById("vit-empty").style.display = "none";
+    document.getElementById("vit-info").style.display = "block";
+    document.getElementById("vit-stat-zones").textContent = result.flagged_zone_count;
+    document.getElementById("vit-stat-acres").textContent = result.flagged_acres.toLocaleString() + " ac";
+    document.getElementById("vit-stat-train").textContent = (result.train_accuracy * 100).toFixed(1) + "%";
+    document.getElementById("vit-stat-val").textContent =
+      (isNaN(result.val_accuracy) ? "n/a" : (result.val_accuracy * 100).toFixed(1) + "%") +
+      ` (${result.val_zone_count} zones)`;
+
+    document.getElementById("vit-loss-empty").style.display = "none";
+    Plotly.newPlot("vit-loss-chart", [{
+      x: result.loss_history.map((_, i) => i + 1),
+      y: result.loss_history,
+      type: "scatter", mode: "lines", line: { color: "#7C9AE8", width: 2.5 },
+    }], {
+      paper_bgcolor: "transparent", plot_bgcolor: "transparent",
+      font: { color: "#7C948A", family: "Inter, sans-serif", size: 11.5 },
+      margin: { t: 10, r: 10, b: 40, l: 45 },
+      xaxis: { title: "Epoch", gridcolor: "#1E322B" },
+      yaxis: { title: "Loss", gridcolor: "#1E322B" },
+      height: 220,
+    }, { displayModeBar: false });
+
+    // agreement between every model that has actually been run so far
+    const sources = [["3D-CNN+ViT", vitFlaggedGrid]];
+    if (suspectedGrid) sources.push(["PCA", suspectedGrid]);
+    if (cnnFlaggedGrid) sources.push(["3D-CNN", cnnFlaggedGrid]);
+
+    const total = farmRows * farmCols;
+    const agreeWith = (a, b) => {
+      let n = 0;
+      for (let r = 0; r < farmRows; r++) for (let c = 0; c < farmCols; c++)
+        if (Boolean(a[r][c]) === Boolean(b[r][c])) n++;
+      return (n / total * 100).toFixed(1);
+    };
+
+    let msg = `The hybrid flagged <b>${result.flagged_zone_count} zone(s)</b> (${result.flagged_acres.toLocaleString()} acres).`;
+    if (suspectedGrid) msg += ` Agreement with PCA: <b>${agreeWith(vitFlaggedGrid, suspectedGrid)}%</b>.`;
+    if (cnnFlaggedGrid) msg += ` Agreement with the plain 3D-CNN: <b>${agreeWith(vitFlaggedGrid, cnnFlaggedGrid)}%</b>.`;
+    if (!suspectedGrid && !cnnFlaggedGrid) msg += ` Run PCA and train the plain 3D-CNN too to see how the three compare.`;
+
+    document.getElementById("vit-agree-empty").style.display = "none";
+    document.getElementById("vit-agree-summary").style.display = "block";
+    document.getElementById("vit-agree-summary").innerHTML = msg;
+
+    refreshTopRisk();
+  } catch (e) {
+    showError("Hybrid training failed: " + e.message);
+  }
+  btn.disabled = false; btn.textContent = "Train 3D-CNN + ViT";
 });
 </script>
 </body>

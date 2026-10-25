@@ -22,7 +22,7 @@ terraspectra/
 ├── backend/
 │   ├── data.py           # mock hyperspectral farm generator + GPS coordinates per zone
 │   ├── pca_pipeline.py   # PCA dimensionality reduction + anomaly scoring
-│   ├── model.py           # 3D-CNN (PyTorch) trained on spectral patches to classify healthy vs. stressed zones
+│   ├── model.py           # 3D-CNN and 3D-CNN + Vision Transformer hybrid (PyTorch), trained on spectral patches
 │   ├── main.py            # FastAPI app (runs on port 8001, so it can run alongside EconoCausal's 8000)
 │   └── requirements.txt
 └── frontend/
@@ -90,9 +90,34 @@ Then open `http://localhost:5501` in your browser.
   anchored near Maharashtra, India, since there's no real satellite feed
   behind this demo.
 
-## What's next (Week 3)
+## Hybrid 3D-CNN + Vision Transformer
 
-Integrating a Vision Transformer's self-attention mechanism on top of the
-CNN (to let the model directly learn correlations across distant spectral
-bands, not just local convolution windows), plus a dynamic risk-analytics
-sidebar.
+The hybrid model reuses the same 3D convolution stack as the plain CNN, but
+instead of averaging every spectral position equally, it treats the spectral
+sequence coming out of the conv layers as a sequence of tokens and applies a
+Transformer self-attention block across them. Convolutions only see nearby
+bands at a time; self-attention lets the model relate bands that are far
+apart (for example the red-edge region and the near-infrared region) in a
+single step, which is closer to how the disease signature actually works.
+
+The first version of the hybrid collapsed (it flagged every zone). The default
+Transformer layer re-normalizes each token, which removes the overall magnitude
+that carries the disease signal. The fix was a pre-norm layer plus a direct
+path that gives the classifier the plain pooled CNN features alongside the
+attention features.
+
+Both models share one training recipe (minority oversampling, mini-batches,
+gradient clipping), so any accuracy difference comes from the architecture
+and not from different training tricks.
+
+## Dynamic risk analytics
+
+The "Top At-Risk Zones" card ranks zones by the average of whichever risk
+signals have been computed so far (PCA, 3D-CNN, 3D-CNN + ViT), and updates
+each time a new analysis is run. It never invents a score for a model that
+has not been run. Clicking a row selects that zone on the field view.
+
+## What's next (Week 4)
+
+A tiling endpoint in the FastAPI layer to process large rasters in chunks,
+and a timeline control to view how risk progresses over time.
